@@ -165,10 +165,24 @@ STATIC FUNCTION ParseFieldDefinition( cDef )
    RETURN { cName, cType, nLen, nDec }
 
 // +--------------------------------------------------------------------
+// + Retorna o Array Auxiliar com a estrutura original tipada do JSON
+// +--------------------------------------------------------------------
+FUNCTION FJSON_GETSTRUCTORIGINAL()
+   LOCAL aWData, aStruct := {}
+   
+   aWData := USRRDD_AREADATA( Select() )
+   IF ValType( aWData ) == "A" .AND. Len( aWData ) >= 5
+      aStruct := aWData[ 5 ] // Guarda a estrutura dos campos no JSONRDD
+   ENDIF
+   
+   RETURN aStruct
+
+
+// +--------------------------------------------------------------------
 // + Retorna um Array com os valores dos campos do registro JSON atual
 // +--------------------------------------------------------------------
 FUNCTION FJSON_GETROW()
-   LOCAL aWData, nRecNo, xRecord, aRow := {}, cKey, aKeys, nX
+   LOCAL aWData, nRecNo, xRecord, aRow := {}, aKeys, nX
    
    aWData := USRRDD_AREADATA( Select() )
    IF ValType( aWData ) == "A" .AND. Len( aWData ) >= 4
