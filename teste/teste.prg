@@ -49,6 +49,37 @@ PROCEDURE Main()
 RETURN
 
 
+PROCEDURE Main05()
+USE tabela_ncm.json VIA "JSONRDD" NEW ALIAS NCM
+DBGoTop()
+
+WHILE !EOF()
+   // Pega um Array contendo todos os valores da linha atual
+   aRegistro := FJSON_GETROW()
+   
+   // Exemplo: exibe o primeiro e o segundo elemento do array da linha
+   IF Len( aRegistro ) >= 2
+      ? "Campo 1:", aRegistro[ 1 ], "| Campo 2:", aRegistro[ 2 ]
+   ENDIF
+   
+   DBSkip()
+ENDDO
+
+DBCloseArea()
+
+PROCEDURE Main04()
+USE tabela_ncm.json VIA "JSONRDD" NEW ALIAS NCM
+DBGoTop()
+
+WHILE !EOF()
+   // Pega a linha atual do JSON unida por pipe "|"
+   ? FJSON_GETLINE( "|" )
+   
+   DBSkip()
+ENDDO
+
+DBCloseArea()
+
 PROCEDURE Main03()
    // Exemplo 1: Conversão básica (parâmetros tipado e header assumem falso por padrão)
    JsonParaCsvRdd( "sefazmodfrete.json" )

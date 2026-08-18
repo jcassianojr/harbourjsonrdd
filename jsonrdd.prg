@@ -42,17 +42,19 @@ FUNCTION FJSON_USARHEADER( lUse )
    ENDIF
    RETURN s_lUseHeader
 
+
 /*
  * Função: JsonParaCsvRdd
  * Objetivo: Converte um arquivo JSON para CSV usando o JSONRDD
  * Parâmetros:
- *   - cFileJson    : Caminho do arquivo JSON de entrada (obrigatório)
- *   - cFileCsv     : Caminho do arquivo CSV de saída (opcional, se vazio troca a extensão)
- *   - lRetornaTipado: Retorna dados tipados (padrão .F.)
- *   - lUserHeader  : Usa o cabeçalho/primeira linha (padrão .F.)
+ *   - cFileJson     : Caminho do arquivo JSON de entrada (obrigatório)
+ *   - cFileCsv      : Caminho do arquivo CSV de saída (opcional, troca a extensão se vazio)
+ *   - lRetornaTipado : Retorna dados tipados (padrão .F.)
+ *   - lUserHeader   : Usa o cabeçalho/primeira linha (padrão .F.)
+ *   - cDelim        : Delimitador de campos (padrão "|")
  */
-FUNCTION JsonParaCsvRdd( cFileJson, cFileCsv, lRetornaTipado, lUserHeader )
-   LOCAL nHandleCsv, nFld, nI, cLinha, lSucesso := .T.
+FUNCTION JsonParaCsvRdd( cFileJson, cFileCsv, lRetornaTipado, lUserHeader, cDelim )
+   LOCAL nHandleCsv, nFld, nI, cLinha
    LOCAL cAliasTemp := "JCN_" + AllTrim( Str( HB_RandomInt( 1000, 9999 ) ) )
 
    // 1. Validações iniciais
@@ -68,6 +70,10 @@ FUNCTION JsonParaCsvRdd( cFileJson, cFileCsv, lRetornaTipado, lUserHeader )
 
    IF ValType( lUserHeader ) <> "L"
       lUserHeader := .F.
+   ENDIF
+
+   IF ValType( cDelim ) <> "C" .OR. Empty( cDelim )
+      cDelim := "|" // Padrão é pipe se não for informado
    ENDIF
 
    // Define o nome do CSV de saída se não informado
@@ -96,16 +102,15 @@ FUNCTION JsonParaCsvRdd( cFileJson, cFileCsv, lRetornaTipado, lUserHeader )
    ( cAliasTemp )->( DBGoTop() )
    nFld := ( cAliasTemp )->( FCount() )
 
-   // 4. Varre os registros e grava no formato CSV (delimitado por |)
+   // 4. Varre os registros e grava no formato CSV usando o delimitador escolhido
    WHILE ( cAliasTemp )->( !EOF() )
       cLinha := ""
       
       FOR nI := 1 TO nFld
-         // Pega o valor do campo respeitando o motor do RDD
          cLinha += hb_ValToStr( ( cAliasTemp )->( FieldGet( nI ) ) )
          
          IF nI < nFld
-            cLinha += "|" // Delimitador Pipe
+            cLinha += cDelim // Usa o delimitador passado por parâmetro (ou "|" por padrão)
          ENDIF
       NEXT
 
@@ -118,7 +123,7 @@ FUNCTION JsonParaCsvRdd( cFileJson, cFileCsv, lRetornaTipado, lUserHeader )
    FClose( nHandleCsv )
    ( cAliasTemp )->( DBCloseArea() )
 
-   ? "Convertido com sucesso: " + cFileJson + " -> " + cFileCsv
+   ? "Convertido com sucesso: " + cFileJson + " -> " + cFileCsv + " [Delim: " + cDelim + "]"
 RETURN .T.
 
 // +--------------------------------------------------------------------
@@ -159,6 +164,71 @@ STATIC FUNCTION ParseFieldDefinition( cDef )
    
    RETURN { cName, cType, nLen, nDec }
 
+// +--------------------------------------------------------------------
+// + Retorna um Array com os valores dos campos do registro JSON atual
+// +--------------------------------------------------------------------
+FUNCTION FJSON_GETROW()
+   LOCAL aWData, nRecNo, xRecord, aRow := {}, cKey, aKeys, nX
+   
+   aWData := USRRDD_AREADATA( Select() )
+   IF ValType( aWData ) == "A" .AND. Len( aWData ) >= 4
+      nRecNo := aWData[ 4 ] // Registro atual (índice)
+      
+      IF nRecNo > 0 .AND. nRecNo <= Len( aWData[ 1 ] )
+         xRecord := aWData[ 1 ][ nRecNo ]
+         
+         // Se for um Objeto / Hash (Chave-Valor)
+         IF ValType( xRecord ) == "H"
+            aKeys := hb_HKeys( xRecord )
+            FOR nX := 1 TO Len( aKeys )
+               AAdd( aRow, hb_HGet( xRecord, aKeys[ nX ] ) )
+            NEXT
+         // Se for um Array de Valores
+         ELSEIF ValType( xRecord ) == "A"
+            aRow := AClone( xRecord )
+         ELSE
+            AAdd( aRow, xRecord )
+         ENDIF
+      ENDIF
+   ENDIF
+   
+   RETURN aRow
+
+// +--------------------------------------------------------------------
+// + Retorna o registro atual do JSON em formato de string/linha formatada
+// +--------------------------------------------------------------------
+FUNCTION FJSON_GETLINE( cDelim )
+   LOCAL aWData, nRecNo, xRecord, cLine := "", nX
+   
+   IF ValType( cDelim ) <> "C" .OR. Empty( cDelim )
+      cDelim := "|" // Padrão pipe se não informado
+   ENDIF
+
+   aWData := USRRDD_AREADATA( Select() )
+   IF ValType( aWData ) == "A" .AND. Len( aWData ) >= 4
+      nRecNo := aWData[ 4 ] // Registro atual (índice)
+      
+      IF nRecNo > 0 .AND. nRecNo <= Len( aWData[ 1 ] )
+         xRecord := aWData[ 1 ][ nRecNo ]
+         
+         // Se for Hash (Objeto), exporta como JSON ou string de valores
+         IF ValType( xRecord ) == "H"
+            cLine := hb_jsonEncode( xRecord, .F. )
+         ELSEIF ValType( xRecord ) == "A"
+            // Se for Array, une os valores usando o delimitador escolhido
+            FOR nX := 1 TO Len( xRecord )
+               cLine += hb_ValToStr( xRecord[ nX ] )
+               IF nX < Len( xRecord )
+                  cLine += cDelim
+               ENDIF
+            NEXT
+         ELSE
+            cLine := hb_ValToStr( xRecord )
+         ENDIF
+      ENDIF
+   ENDIF
+   
+   RETURN cLine
 // +--------------------------------------------------------------------
 // + Conversão Lógica Robusta
 // +--------------------------------------------------------------------

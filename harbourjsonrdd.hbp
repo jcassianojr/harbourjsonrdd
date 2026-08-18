@@ -1,0 +1,27 @@
+
+-o${hb_name}
+
+
+-hbx=${hb_name}.hbx
+
+
+# Nome da biblioteca de saída
+-olib/${hb_plat}/${hb_comp}/${hb_name}
+
+{!xhb}-hbx=harbourjsonrdd.hbx
+{!xhb}harbourjsonrdd.hbx
+
+
+# Modo biblioteca
+-hblib
+-inc
+
+# Configurações de compilação (equivalentes aos parâmetros do .bat)
+-n -w2 -gc0
+
+xhb.hbc
+
+jsonrdd.prg
+
+
+$hb_pkg_install.hbm
