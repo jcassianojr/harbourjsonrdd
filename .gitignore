@@ -1,0 +1,11 @@
+*.exe
+*.log
+*.o
+*.reso
+*.dll
+*.a
+/hbfbird5/lib/win/mingw/.hbmk
+/hbfbird5/.hbmk
+/hbfbird5/lib/win/mingw64/.hbmk
+/sddfb5/lib/win/mingw64/.hbmk
+/sddfb5/lib/win/mingw/.hbmk
