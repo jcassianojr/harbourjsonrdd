@@ -1,6 +1,7 @@
 /*
  * Classe: JSONClass
- * Objetivo: Leitura de arquivos JSON com cursor DBF-like e interface unificada (Polimorfismo com CSVClass).
+ * Objetivo: Leitura de arquivos JSON com cursor DBF-like.
+ * Arquitetura: Interface polimórfica com CSVClass, mas com construtor enxuto e específico.
  */
 
 #include "hbclass.ch"
@@ -13,17 +14,17 @@ CREATE CLASS JSONClass
    VAR nTotalRecords
    VAR nFields
    VAR nRecNo
-   VAR cDelim           // Mantido para paridade de propriedades
-   VAR cLineDelim       // Mantido para paridade
    VAR lHasHeader       
    VAR lTyped
-   VAR lUseSplit        // Mantido para paridade
+   VAR aManualHeader    
    VAR cJsonType        
    VAR lEof
    VAR lBof
 
-   // Assinatura rigorosamente identica a CSVClass
-   METHOD New( cFileName, cDelimiter, lHeader, lRetornaTipado, lSplit, cLineDelimiter )
+   // Construtor limpo: recebe apenas o que o motor JSON realmente consome
+   METHOD New( cFileName, lHeader, lRetornaTipado, aManualHeader )
+   
+   // --- Interface Polimorfica (Idêntica ao CSVClass) ---
    METHOD Open()
    METHOD Close()
    METHOD GoTop()
@@ -40,19 +41,20 @@ CREATE CLASS JSONClass
    METHOD FieldGet( nFieldPos )
    METHOD GetRow()
    
-   // Motor Interno de conversao
+   // --- Motor Interno ---
    METHOD StrLogic( cVal, lDefault )
    METHOD StrDate( xData )
+   
+   METHOD GetLine( cDelim )
+   METHOD GetStructOriginal() INLINE ::aStruct
 
 ENDCLASS
 
-METHOD New( cFileName, cDelimiter, lHeader, lRetornaTipado, lSplit, cLineDelimiter ) CLASS JSONClass
-   ::cFile      := cFileName
-   ::cDelim     := hb_DefaultValue( cDelimiter, "" )
-   ::lHasHeader := hb_DefaultValue( lHeader, .T. )
-   ::lTyped     := hb_DefaultValue( lRetornaTipado, .F. )
-   ::lUseSplit  := hb_DefaultValue( lSplit, .F. )
-   ::cLineDelim := hb_DefaultValue( cLineDelimiter, "" )
+METHOD New( cFileName, lHeader, lRetornaTipado, aManualHeader ) CLASS JSONClass
+   ::cFile         := cFileName
+   ::lHasHeader    := hb_DefaultValue( lHeader, .T. )
+   ::lTyped        := hb_DefaultValue( lRetornaTipado, .F. )
+   ::aManualHeader := hb_DefaultValue( aManualHeader, {} )
    
    ::aData         := {}
    ::aStruct       := {}
@@ -63,6 +65,42 @@ METHOD New( cFileName, cDelimiter, lHeader, lRetornaTipado, lSplit, cLineDelimit
    ::lEof          := .F.
    ::lBof          := .T.
 RETURN Self
+
+// +--------------------------------------------------------------------
+// + Retorna o registro atual do JSON em formato de string/linha formatada
+// +--------------------------------------------------------------------
+METHOD GetLine( cDelim ) CLASS JSONClass
+   LOCAL xRecord, cLine := "", nX
+   
+   IF ValType( cDelim ) <> "C" .OR. Empty( cDelim )
+      cDelim := "|" // Padrão pipe se não informado
+   ENDIF
+
+   IF ::nRecNo < 1 .OR. ::lEof
+      RETURN ""
+   ENDIF
+
+   xRecord := ::aData[ ::nRecNo ]
+   
+   // Se for Objeto/Hash, serializa o nó atual como string JSON
+   IF ValType( xRecord ) == "H"
+      cLine := hb_jsonEncode( xRecord, .F. )
+      
+   // Se for Array de valores, une usando o delimitador
+   ELSEIF ValType( xRecord ) == "A"
+      FOR nX := 1 TO Len( xRecord )
+         cLine += hb_ValToStr( xRecord[ nX ] )
+         IF nX < Len( xRecord )
+            cLine += cDelim
+         ENDIF
+      NEXT
+      
+   // Fallback para valores literais
+   ELSE
+      cLine := hb_ValToStr( xRecord )
+   ENDIF
+   
+   RETURN cLine
 
 METHOD Open() CLASS JSONClass
    LOCAL cContent, xDecoded, xFirstRow, aKeys, nI, cName
@@ -81,35 +119,52 @@ METHOD Open() CLASS JSONClass
    ::aData := xDecoded
    ::nTotalRecords := Len( ::aData )
 
-   IF ::nTotalRecords > 0 .AND. ::lHasHeader .AND. ValType( ::aData[ 1 ] ) == "A"
+   IF ::nTotalRecords > 0
       xFirstRow := ::aData[ 1 ]
-      hb_ADel( ::aData, 1, .T. )
-      ::nTotalRecords--
-      ::cJsonType := "A"
-      ::nFields := Len( xFirstRow )
-      FOR nI := 1 TO ::nFields
-         cName := Upper( Left( AllTrim( hb_ValToStr( xFirstRow[ nI ] ) ), 10 ) )
-         AAdd( ::aStruct, { cName, nI, "C" } )
-      NEXT
+      ::cJsonType := iif( ValType( xFirstRow ) == "H", "H", "A" )
 
-   ELSEIF ::nTotalRecords > 0
-      xFirstRow := ::aData[ 1 ]
-      
-      IF ValType( xFirstRow ) == "H"
-         ::cJsonType := "H"
-         aKeys := hb_HKeys( xFirstRow )
-         ::nFields := Len( aKeys )
+      // 1. SE O CABEÇALHO FOI PASSADO MANUALMENTE VIA MATRIZ 
+      IF Len( ::aManualHeader ) > 0
+         
+         IF ::lHasHeader .AND. ::cJsonType == "A"
+            hb_ADel( ::aData, 1, .T. )
+            ::nTotalRecords--
+         ENDIF
+
+         ::nFields := Len( ::aManualHeader )
          FOR nI := 1 TO ::nFields
-            cName := Upper( Left( AllTrim( aKeys[ nI ] ), 10 ) )
-            AAdd( ::aStruct, { cName, aKeys[ nI ], "C" } )
+            cName := Upper( Left( AllTrim( ::aManualHeader[ nI ] ), 10 ) )
+            IF ::cJsonType == "H"
+               AAdd( ::aStruct, { cName, ::aManualHeader[ nI ], "C" } )
+            ELSE
+               AAdd( ::aStruct, { cName, nI, "C" } )
+            ENDIF
          NEXT
-      ELSEIF ValType( xFirstRow ) == "A"
-         ::cJsonType := "A"
-         ::nFields := Len( xFirstRow )
-         FOR nI := 1 TO ::nFields
-            cName := "CAMPO" + AllTrim( Str( nI ) )
-            AAdd( ::aStruct, { cName, nI, "C" } )
-         NEXT
+
+      // 2. LEITURA AUTOMATICA DO ARQUIVO JSON
+      ELSE
+         IF ::cJsonType == "A" .AND. ::lHasHeader
+            hb_ADel( ::aData, 1, .T. )
+            ::nTotalRecords--
+            ::nFields := Len( xFirstRow )
+            FOR nI := 1 TO ::nFields
+               cName := Upper( Left( AllTrim( hb_ValToStr( xFirstRow[ nI ] ) ), 10 ) )
+               AAdd( ::aStruct, { cName, nI, "C" } )
+            NEXT
+         ELSEIF ::cJsonType == "H"
+            aKeys := hb_HKeys( xFirstRow )
+            ::nFields := Len( aKeys )
+            FOR nI := 1 TO ::nFields
+               cName := Upper( Left( AllTrim( aKeys[ nI ] ), 10 ) )
+               AAdd( ::aStruct, { cName, aKeys[ nI ], "C" } )
+            NEXT
+         ELSEIF ::cJsonType == "A"
+            ::nFields := Len( xFirstRow )
+            FOR nI := 1 TO ::nFields
+               cName := "CAMPO" + AllTrim( Str( nI ) )
+               AAdd( ::aStruct, { cName, nI, "C" } )
+            NEXT
+         ENDIF
       ENDIF
    ENDIF
 
@@ -190,7 +245,7 @@ METHOD FieldPos( cFieldName ) CLASS JSONClass
    RETURN AScan( ::aStruct, {|x| x[ 1 ] == cFieldName } )
 
 METHOD FieldGet( nFieldPos ) CLASS JSONClass
-   LOCAL xRecord, xVal, xRawVal
+   LOCAL xRecord, xVal, xRawVal, cType
 
    IF ::nRecNo < 1 .OR. ::lEof .OR. nFieldPos < 1 .OR. nFieldPos > ::nFields
       RETURN NIL
@@ -198,6 +253,7 @@ METHOD FieldGet( nFieldPos ) CLASS JSONClass
 
    xRecord := ::aData[ ::nRecNo ]
 
+   // Extrai o dado cru
    IF ::cJsonType == "H"
       IF hb_HHasKey( xRecord, ::aStruct[ nFieldPos, 2 ] )
          xRawVal := hb_HGet( xRecord, ::aStruct[ nFieldPos, 2 ] )
@@ -212,16 +268,31 @@ METHOD FieldGet( nFieldPos ) CLASS JSONClass
       ENDIF
    ENDIF
 
-   IF ::lTyped .AND. ValType( xRawVal ) == "C"
-      IF IsDigit( Left( AllTrim( xRawVal ), 1 ) ) .AND. ("/" $ xRawVal .OR. "-" $ xRawVal)
-         xVal := ::StrDate( xRawVal ) 
-      ELSEIF Upper( AllTrim( xRawVal ) ) $ "TRUE.T.SIM"
-         xVal := .T.
+   // --- LOGICA DE TIPAGEM CORRIGIDA ---
+   IF ::lTyped
+      cType := ::aStruct[ nFieldPos, 3 ]
+      
+      // 1. Tipagem forcada pelo Cabecalho Manual
+      IF cType == "D"
+         xVal := ::StrDate( xRawVal )
+      ELSEIF cType == "L"
+         xVal := ::StrLogic( xRawVal, .F. )
+      ELSEIF cType == "N"
+         xVal := Val( hb_ValToStr( xRawVal ) )
+         
+      // 2. Tipagem Dinamica (Inferencia)
+      ELSEIF ValType( xRawVal ) == "C"
+         IF IsDigit( Left( AllTrim( xRawVal ), 1 ) ) .AND. ("/" $ xRawVal .OR. "-" $ xRawVal)
+            xVal := ::StrDate( xRawVal ) 
+         ELSE
+            // Usa o motor StrLogic. Se nao for logico, devolve a propria string!
+            xVal := ::StrLogic( xRawVal, xRawVal )
+         ENDIF
       ELSE
-         xVal := xRawVal
+         xVal := xRawVal // Mantem native types (Ex: Numeros e Bools nativos do JSON)
       ENDIF
    ELSEIF !::lTyped
-      xVal := hb_ValToStr( xRawVal )
+      xVal := hb_ValToStr( xRawVal ) // Força String se lTyped for .F.
    ELSE
       xVal := xRawVal 
    ENDIF
@@ -243,52 +314,52 @@ METHOD StrLogic( cVal, lDefault ) CLASS JSONClass
    
    SWITCH Upper( cVal )
    CASE ".T."; CASE "TRUE"; CASE "YES"; CASE "SIM"; CASE "ON"; CASE "Y"; CASE "1"; CASE "T"; CASE "S"
-      RETURN .T. //[cite: 3]
+      RETURN .T.
    CASE ".F."; CASE "FALSE"; CASE "NO"; CASE "NAO"; CASE "OFF"; CASE "N"; CASE "0"; CASE "F"; CASE "<NULL>"; CASE "NULL"
-      RETURN .F. //[cite: 3]
+      RETURN .F.
    ENDSWITCH
 RETURN lDefault
 
 METHOD StrDate( xData ) CLASS JSONClass
    LOCAL dRet := CToD( "" ), cTemp, aParts, cAno, cMes, cDia, nAno
 
-   IF ValType( xData ) == "D"; RETURN xData; ENDIF //[cite: 3]
-   IF ValType( xData ) <> "C" .OR. Empty( xData ) .OR. xData == "NULL"; RETURN dRet; ENDIF //[cite: 3]
+   IF ValType( xData ) == "D"; RETURN xData; ENDIF
+   IF ValType( xData ) <> "C" .OR. Empty( xData ) .OR. xData == "NULL"; RETURN dRet; ENDIF
 
    xData := AllTrim( xData )
-   cTemp := StrTran( xData, "-", "/" ) //[cite: 3]
-   cTemp := StrTran( cTemp, ".", "/" ) //[cite: 3]
-   aParts := hb_ATokens( cTemp, "/" ) //[cite: 3]
+   cTemp := StrTran( xData, "-", "/" )
+   cTemp := StrTran( cTemp, ".", "/" )
+   aParts := hb_ATokens( cTemp, "/" )
 
    IF Len( aParts ) == 3
       IF Len( aParts[ 1 ] ) == 4
          cAno := aParts[ 1 ]
-         cMes := StrZero( Val( aParts[ 2 ] ), 2 ) //[cite: 3]
+         cMes := StrZero( Val( aParts[ 2 ] ), 2 )
          cDia := StrZero( Val( aParts[ 3 ] ), 2 )
       ELSE
-         cDia := StrZero( Val( aParts[ 1 ] ), 2 ) //[cite: 3]
+         cDia := StrZero( Val( aParts[ 1 ] ), 2 )
          cMes := StrZero( Val( aParts[ 2 ] ), 2 )
          cAno := aParts[ 3 ]
          IF Len( cAno ) == 2
             nAno := Val( cAno )
-            cAno := iif( nAno < 50, "20" + cAno, "19" + cAno ) //[cite: 3]
+            cAno := iif( nAno < 50, "20" + cAno, "19" + cAno )
          ENDIF
       ENDIF
-      IF cAno + cMes + cDia == "00000000"; RETURN dRet; ENDIF //[cite: 3]
-      RETURN SToD( cAno + cMes + cDia ) //[cite: 3]
+      IF cAno + cMes + cDia == "00000000"; RETURN dRet; ENDIF
+      RETURN SToD( cAno + cMes + cDia )
    ELSE
       IF Len( cTemp ) == 8
          IF Val( Left( cTemp, 4 ) ) > 1900
-            dRet := SToD( cTemp ) //[cite: 3]
+            dRet := SToD( cTemp )
          ELSE
-            dRet := SToD( Right( cTemp, 4 ) + SubStr( cTemp, 3, 2 ) + Left( cTemp, 2 ) ) //[cite: 3]
+            dRet := SToD( Right( cTemp, 4 ) + SubStr( cTemp, 3, 2 ) + Left( cTemp, 2 ) )
          ENDIF
       ELSEIF Len( cTemp ) == 6
          nAno := Val( Right( cTemp, 2 ) )
-         cAno := iif( nAno < 50, "20" + Right( cTemp, 2 ), "19" + Right( cTemp, 2 ) ) //[cite: 3]
-         dRet := SToD( cAno + SubStr( cTemp, 3, 2 ) + Left( cTemp, 2 ) ) //[cite: 3]
+         cAno := iif( nAno < 50, "20" + Right( cTemp, 2 ), "19" + Right( cTemp, 2 ) )
+         dRet := SToD( cAno + SubStr( cTemp, 3, 2 ) + Left( cTemp, 2 ) )
       ELSE
-         dRet := CToD( xData ) //[cite: 3]
+         dRet := CToD( xData )
       ENDIF
    ENDIF
 RETURN dRet
