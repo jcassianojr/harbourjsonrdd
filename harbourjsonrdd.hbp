@@ -22,6 +22,7 @@
 xhb.hbc
 
 jsonrdd.prg
+jsonclasse.prg
 
 
 $hb_pkg_install.hbm
