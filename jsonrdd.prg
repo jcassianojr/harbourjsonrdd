@@ -285,7 +285,7 @@ STATIC FUNCTION StrLogicrdd( cVAL, lDEFAULT )
 // +--------------------------------------------------------------------
 STATIC FUNCTION StrDateRdd( xData )
    LOCAL dRet := CToD( "" )
-   LOCAL cTemp, aParts, cAno, cMes, cDia, nAno
+   LOCAL cTemp, aParts, cAno, cMes, cDia, nAno,npos,cMesStr
 
    // 1. Já é data?
    IF ValType( xData ) == "D"
@@ -298,6 +298,50 @@ STATIC FUNCTION StrDateRdd( xData )
    ENDIF
 
    xData := AllTrim( xData )
+   
+    // -------------------------------------------------------------------------
+   // NOVO BLOCO: Trata formatos HTTP/Extensos (ex: "Fri, 05 Jun 2026..." ou "05 Junho 2026...")
+   // -------------------------------------------------------------------------
+   cTemp := xData
+   nPos  := At( ",", cTemp )
+   
+   // Se tiver vírgula (ex: "Fri,"), removemos ela e o dia da semana
+   IF nPos > 0
+      cTemp := AllTrim( SubStr( cTemp, nPos + 1 ) )
+   ENDIF
+   
+   // Quebra pelos espaços
+   aParts := hb_ATokens( cTemp, " " )
+   
+   // Se tem pelo menos 3 partes (Dia, Mês, Ano), tentamos validar
+   IF Len( aParts ) >= 3
+      cMesStr := Upper( Left( aParts[ 2 ], 3 ) ) // Pega os 3 primeiros caracteres (JUN)
+      cMes    := "00"
+      
+      DO CASE
+         CASE cMesStr == "JAN"; cMes := "01"
+         CASE cMesStr == "FEB" .OR. cMesStr == "FEV"; cMes := "02"
+         CASE cMesStr == "MAR"; cMes := "03"
+         CASE cMesStr == "APR" .OR. cMesStr == "ABR"; cMes := "04"
+         CASE cMesStr == "MAY" .OR. cMesStr == "MAI"; cMes := "05"
+         CASE cMesStr == "JUN"; cMes := "06" // Atende Jun e Junho
+         CASE cMesStr == "JUL"; cMes := "07" // Atende Jul e Julho
+         CASE cMesStr == "AUG" .OR. cMesStr == "AGO"; cMes := "08"
+         CASE cMesStr == "SEP" .OR. cMesStr == "SET"; cMes := "09"
+         CASE cMesStr == "OCT" .OR. cMesStr == "OUT"; cMes := "10"
+         CASE cMesStr == "NOV"; cMes := "11"
+         CASE cMesStr == "DEC" .OR. cMesStr == "DEZ"; cMes := "12"
+      ENDCASE
+      
+      // Se encontrou um mês válido e o ano tem 4 dígitos, retorna direto
+      IF cMes != "00" .AND. Len( aParts[ 3 ] ) == 4
+         cDia := StrZero( Val( aParts[ 1 ] ), 2 )
+         cAno := aParts[ 3 ]
+         RETURN SToD( cAno + cMes + cDia )
+      ENDIF
+   ENDIF
+   // -------------------------------------------------------------------------
+  
 
    // 3. Padroniza todos os separadores conhecidos para uma barra "/"
    cTemp := StrTran( xData, "-", "/" )
