@@ -281,133 +281,129 @@ STATIC FUNCTION StrLogicrdd( cVAL, lDEFAULT )
    RETURN lDEFAULT
 
 // +--------------------------------------------------------------------
-// + Conversão de Data Inteligente
+// +    Static Function StrDateRdd( xData )
+// +    Conversor inteligente de datas universal para o RDD ADO
 // +--------------------------------------------------------------------
 STATIC FUNCTION StrDateRdd( xData )
    LOCAL dRet := CToD( "" )
-   LOCAL cTemp, aParts, cAno, cMes, cDia, nAno,npos,cMesStr
+   LOCAL cTemp, aParts, cAno, cMes, cDia, nAno, nMes, nDia, i
+   LOCAL aMonths := { "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" }
 
-   // 1. Já é data?
    IF ValType( xData ) == "D"
       RETURN xData
    ENDIF
 
-   // 2. É nulo ou inválido?
-   IF ValType( xData ) <> "C" .OR. Empty( xData ) .OR. xData == "NULL"
+   IF ValType( xData ) <> "C" .OR. Empty( xData ) .OR. Upper( AllTrim( xData ) ) == "NULL"
       RETURN dRet
    ENDIF
 
    xData := AllTrim( xData )
-   
-    // -------------------------------------------------------------------------
-   // NOVO BLOCO: Trata formatos HTTP/Extensos (ex: "Fri, 05 Jun 2026..." ou "05 Junho 2026...")
+   cTemp := xData
+
+   // -------------------------------------------------------------------------
+   // Suporte a Formatos HTTP-date (RFC 1123, RFC 850 e ANSI C asctime)
+   // -------------------------------------------------------------------------
+   // Padroniza separadores (, e -) para espaços para facilitar a quebra
+   cTemp := StrTran( cTemp, ",", " " )
+   cTemp := StrTran( cTemp, "-", " " )
+
+   // Remove espaços duplos gerados no ANSI C ou pela substituição acima
+   DO WHILE "  " $ cTemp
+      cTemp := StrTran( cTemp, "  ", " " )
+   ENDDO
+
+   aParts := hb_ATokens( AllTrim( cTemp ), " " )
+
+   // Um formato extenso válido conterá pelo menos 4 fragmentos úteis
+   IF Len( aParts ) >= 4
+      FOR i := 1 TO Len( aParts )
+         nMes := AScan( aMonths, Upper( Left( aParts[ i ], 3 ) ) )
+         
+         IF nMes > 0
+            cMes := StrZero( nMes, 2 )
+            
+            // Extrai o Dia e o Ano baseado na posição do Mês (ANSI C vs RFC)
+            IF i == 2 .AND. Len( aParts ) >= 5 // ANSI C asctime: "Sun Nov 6 08:49:37 1994"
+               cDia := StrZero( Val( aParts[ 3 ] ), 2 )
+               cAno := aParts[ 5 ]
+            ELSEIF i == 3 // RFC 1123 / RFC 850: "Sun 06 Nov 1994" ou "Sunday 06 Nov 94"
+               cDia := StrZero( Val( aParts[ 2 ] ), 2 )
+               cAno := aParts[ 4 ]
+               // Trata o ano de 2 dígitos legado do RFC 850
+               IF Len( cAno ) == 2
+                  nAno := Val( cAno )
+                  cAno := iif( nAno < 50, "20" + cAno, "19" + cAno )
+               ENDIF
+            ELSE
+               LOOP // Não reconhecido, continua buscando no loop
+            ENDIF
+            
+            nDia := Val( cDia )
+            nAno := Val( cAno )
+            
+            // Validação rigorosa dos limites numéricos
+            IF nDia >= 1 .AND. nDia <= 31 .AND. nAno >= 1000 .AND. Len( cAno ) == 4
+               dRet := SToD( cAno + cMes + cDia )
+               // O Harbour previne datas falsas como 31/Nov e retorna Vazio. Passando no teste, está apto.
+               IF !Empty( dRet )
+                  RETURN dRet
+               ENDIF
+            ENDIF
+         ENDIF
+      NEXT
+   ENDIF
+
+   // -------------------------------------------------------------------------
+   // Fallback Original para Bancos de Dados (YYYY-MM-DD, DD/MM/YYYY, etc.)
    // -------------------------------------------------------------------------
    cTemp := xData
-   nPos  := At( ",", cTemp )
-   
-   // Se tiver vírgula (ex: "Fri,"), removemos ela e o dia da semana
-   IF nPos > 0
-      cTemp := AllTrim( SubStr( cTemp, nPos + 1 ) )
-   ENDIF
-   
-   // Quebra pelos espaços
-   aParts := hb_ATokens( cTemp, " " )
-   
-   // Se tem pelo menos 3 partes (Dia, Mês, Ano), tentamos validar
-   IF Len( aParts ) >= 3
-      cMesStr := Upper( Left( aParts[ 2 ], 3 ) ) // Pega os 3 primeiros caracteres (JUN)
-      cMes    := "00"
-      
-      DO CASE
-         CASE cMesStr == "JAN"; cMes := "01"
-         CASE cMesStr == "FEB" .OR. cMesStr == "FEV"; cMes := "02"
-         CASE cMesStr == "MAR"; cMes := "03"
-         CASE cMesStr == "APR" .OR. cMesStr == "ABR"; cMes := "04"
-         CASE cMesStr == "MAY" .OR. cMesStr == "MAI"; cMes := "05"
-         CASE cMesStr == "JUN"; cMes := "06" // Atende Jun e Junho
-         CASE cMesStr == "JUL"; cMes := "07" // Atende Jul e Julho
-         CASE cMesStr == "AUG" .OR. cMesStr == "AGO"; cMes := "08"
-         CASE cMesStr == "SEP" .OR. cMesStr == "SET"; cMes := "09"
-         CASE cMesStr == "OCT" .OR. cMesStr == "OUT"; cMes := "10"
-         CASE cMesStr == "NOV"; cMes := "11"
-         CASE cMesStr == "DEC" .OR. cMesStr == "DEZ"; cMes := "12"
-      ENDCASE
-      
-      // Se encontrou um mês válido e o ano tem 4 dígitos, retorna direto
-      IF cMes != "00" .AND. Len( aParts[ 3 ] ) == 4
-         cDia := StrZero( Val( aParts[ 1 ] ), 2 )
-         cAno := aParts[ 3 ]
-         RETURN SToD( cAno + cMes + cDia )
-      ENDIF
-   ENDIF
-   // -------------------------------------------------------------------------
-  
-
-   // 3. Padroniza todos os separadores conhecidos para uma barra "/"
-   cTemp := StrTran( xData, "-", "/" )
+   cTemp := StrTran( cTemp, "-", "/" )
    cTemp := StrTran( cTemp, ".", "/" )
 
-   // 4. Analisa a estrutura COM os separadores
    aParts := hb_ATokens( cTemp, "/" )
 
    IF Len( aParts ) == 3
-      // TEM SEPARADOR! Identificamos o formato pelo tamanho do primeiro bloco
       IF Len( aParts[ 1 ] ) == 4
-         // Formato YYYY/MM/DD (O Ano veio primeiro)
          cAno := aParts[ 1 ]
-         cMes := StrZero( Val( aParts[ 2 ] ), 2 ) // Garante 2 dígitos (ex: 3 vira 03)
+         cMes := StrZero( Val( aParts[ 2 ] ), 2 )
          cDia := StrZero( Val( aParts[ 3 ] ), 2 )
       ELSE
-         // Formato DD/MM/YYYY ou DD/MM/YY (O Dia veio primeiro)
          cDia := StrZero( Val( aParts[ 1 ] ), 2 )
          cMes := StrZero( Val( aParts[ 2 ] ), 2 )
          cAno := aParts[ 3 ]
          
-         // Lógica de Século para Anos com 2 dígitos (ex: 05/03/21)
          IF Len( cAno ) == 2
             nAno := Val( cAno )
-            IF nAno < 50
-               cAno := "20" + cAno
-            ELSE
-               cAno := "19" + cAno
-            ENDIF
+            cAno := iif( nAno < 50, "20" + cAno, "19" + cAno )
          ENDIF
       ENDIF
       
-      // Validação contra zeros vazios
+      // Validação do Fallback
       IF cAno + cMes + cDia == "00000000"
-         RETURN dRet
+         RETURN CToD( "" )
       ENDIF
       
-      // Converte usando a forma mais veloz do Harbour: SToD("AAAAMMDD")
-      RETURN SToD( cAno + cMes + cDia )
-
+      dRet := SToD( cAno + cMes + cDia )
+      RETURN iif( Empty( dRet ), CToD( "" ), dRet )
+      
    ELSE
-      // NÃO TEM SEPARADOR! Veio tudo grudado. Usa a lógica robusta de tamanho
+      // Extração bruta
       IF Len( cTemp ) == 8
-         // AAAAMMDD ou DDMMAAAA
          IF Val( Left( cTemp, 4 ) ) > 1900
             dRet := SToD( cTemp )
          ELSE
             dRet := SToD( Right( cTemp, 4 ) + SubStr( cTemp, 3, 2 ) + Left( cTemp, 2 ) )
          ENDIF
       ELSEIF Len( cTemp ) == 6
-         // DDMMAA (Tudo grudado e ano com 2 dígitos)
          nAno := Val( Right( cTemp, 2 ) )
-         IF nAno < 50
-            cAno := "20" + Right( cTemp, 2 )
-         ELSE
-            cAno := "19" + Right( cTemp, 2 )
-         ENDIF
+         cAno := iif( nAno < 50, "20" + Right( cTemp, 2 ), "19" + Right( cTemp, 2 ) )
          dRet := SToD( cAno + SubStr( cTemp, 3, 2 ) + Left( cTemp, 2 ) )
       ELSE
-         // Tenta o CToD nativo como última esperança se a string for muito atípica
          dRet := CToD( xData )
       ENDIF
    ENDIF
 
    RETURN dRet
-
 
 // +--------------------------------------------------------------------
 // + Métodos Internos do RDD
