@@ -321,65 +321,82 @@ METHOD StrLogic( cVal, lDefault ) CLASS JSONClass
 RETURN lDefault
 
 METHOD StrDate( xData ) CLASS JSONClass
-   LOCAL dRet := CToD( "" ), cTemp, aParts, cAno, cMes, cDia, nAno, nMes, nDia, i
-   LOCAL aMonths := { "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" }
+LOCAL dRet := CToD( "" )
+   LOCAL cTemp, aParts 
+   LOCAL i, nMes, cMes, cAno, cDia, nDia, nAno, cMesStr
+   LOCAL cCleanData
+   
+   // Matrizes independentes pela clareza e velocidade nativa do AScan
+   LOCAL aMonthsEN := { "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" }
+   LOCAL aMonthsPT := { "JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ" }
 
    IF ValType( xData ) == "D"
       RETURN xData
-   ENDIF 
+   ENDIF
 
-   IF ValType( xData ) <> "C" .OR. Empty( xData ) .OR. Upper( AllTrim( xData ) ) == "NULL"
+   IF ValType( xData ) <> "C" .OR. Empty( xData )
       RETURN dRet
-   ENDIF 
-
-   xData := AllTrim( xData )
-   cTemp := xData
+   ENDIF
    
+   // Limpa uma única vez para otimizar os testes
+   cCleanData := Upper( AllTrim( xData ) )
+
+   // Barreira imediata contra literais nulos/vazios
+   IF cCleanData == "NULL" .OR. cCleanData == "NIL" .OR. cCleanData == "<NULL>" .OR. cCleanData == "NUL" .OR. cCleanData == "/  /" .OR. cCleanData == "-  -"
+      RETURN dRet
+   ENDIF
+
+   cTemp := AllTrim( xData )
+
    // -------------------------------------------------------------------------
-   // Suporte a Formatos HTTP-date (RFC 1123, RFC 850 e ANSI C asctime)
+   // Suporte a Formatos HTTP-date e Logs (Inglês e Português)
    // -------------------------------------------------------------------------
-   // Padroniza separadores (, e -) para espaços para facilitar a quebra
    cTemp := StrTran( cTemp, ",", " " )
    cTemp := StrTran( cTemp, "-", " " )
 
-   // Remove espaços duplos gerados no ANSI C ou pela substituição acima
    DO WHILE "  " $ cTemp
       cTemp := StrTran( cTemp, "  ", " " )
    ENDDO
 
    aParts := hb_ATokens( AllTrim( cTemp ), " " )
 
-   // Um formato extenso válido conterá pelo menos 4 fragmentos úteis
    IF Len( aParts ) >= 4
       FOR i := 1 TO Len( aParts )
-         nMes := AScan( aMonths, Upper( Left( aParts[ i ], 3 ) ) )
+         cMesStr := Upper( Left( aParts[ i ], 3 ) )
          
+         // 1. Busca primeiro em Inglês
+         nMes := AScan( aMonthsEN, cMesStr )
+         
+         // 2. Se não encontrar, tenta em Português
+         IF nMes == 0
+            nMes := AScan( aMonthsPT, cMesStr )
+         ENDIF
+         
+         // Se encontrou o mês, processa
          IF nMes > 0
             cMes := StrZero( nMes, 2 )
             
             // Extrai o Dia e o Ano baseado na posição do Mês (ANSI C vs RFC)
-            IF i == 2 .AND. Len( aParts ) >= 5 // ANSI C asctime: "Sun Nov 6 08:49:37 1994"
+            IF i == 2 .AND. Len( aParts ) >= 5 // ANSI C asctime
                cDia := StrZero( Val( aParts[ 3 ] ), 2 )
                cAno := aParts[ 5 ]
-            ELSEIF i == 3 // RFC 1123 / RFC 850: "Sun 06 Nov 1994" ou "Sunday 06 Nov 94"
+            ELSEIF i == 3 // RFC 1123 / RFC 850
                cDia := StrZero( Val( aParts[ 2 ] ), 2 )
                cAno := aParts[ 4 ]
-               // Trata o ano de 2 dígitos legado do RFC 850
+               
                IF Len( cAno ) == 2
                   nAno := Val( cAno )
                   cAno := iif( nAno < 50, "20" + cAno, "19" + cAno )
                ENDIF
             ELSE
-               LOOP // Não reconhecido, continua buscando no loop
+               LOOP 
             ENDIF
             
             nDia := Val( cDia )
             nAno := Val( cAno )
             
-            // Validação rigorosa dos limites numéricos
             IF nDia >= 1 .AND. nDia <= 31 .AND. nAno >= 1000 .AND. Len( cAno ) == 4
                dRet := SToD( cAno + cMes + cDia )
-               // O Harbour previne datas falsas como 31/Nov e retorna Vazio. Passando no teste, está apto.
                IF !Empty( dRet )
                   RETURN dRet
                ENDIF
@@ -391,7 +408,7 @@ METHOD StrDate( xData ) CLASS JSONClass
    // -------------------------------------------------------------------------
    // Fallback Original para Bancos de Dados (YYYY-MM-DD, DD/MM/YYYY, etc.)
    // -------------------------------------------------------------------------
-   cTemp := xData
+   cTemp := AllTrim( xData ) // Restaura a string original limpa para o fallback
    cTemp := StrTran( cTemp, "-", "/" ) 
    cTemp := StrTran( cTemp, ".", "/" ) 
    aParts := hb_ATokens( cTemp, "/" ) 
@@ -431,5 +448,4 @@ METHOD StrDate( xData ) CLASS JSONClass
       ENDIF
    ENDIF
 RETURN dRet
-
 
