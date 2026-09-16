@@ -529,7 +529,7 @@ STATIC FUNCTION FJSON_OPEN( nWA, aOpenInfo )
       UR_SUPER_SETFIELDEXTENT( nWA, Len( xFirstRow ) )
       FOR nI := 1 TO Len( xFirstRow )
          aField := Array( UR_FI_SIZE )
-         cParsedName := "CAMPO" + AllTrim( Str( nI ) )
+         cParsedName := "CAMPO" + AllTrim( StrZERO( nI,3 ) )
          cType := "C"
          
          IF s_lUseHeader .AND. ValType( xFirstRow[ nI ] ) == "C"

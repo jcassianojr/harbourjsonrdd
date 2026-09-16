@@ -161,7 +161,7 @@ METHOD Open() CLASS JSONClass
          ELSEIF ::cJsonType == "A"
             ::nFields := Len( xFirstRow )
             FOR nI := 1 TO ::nFields
-               cName := "CAMPO" + AllTrim( Str( nI ) )
+               cName := "CAMPO" + AllTrim( StrZERO( nI,3 ) )
                AAdd( ::aStruct, { cName, nI, "C" } )
             NEXT
          ENDIF
