@@ -2,6 +2,7 @@
  * Classe: JSONClass
  * Objetivo: Leitura de arquivos JSON com cursor DBF-like.
  * Arquitetura: Interface polimórfica com CSVClass, mas com construtor enxuto e específico.
+ * Atualização: Buffer via Arrays, Proteção Numérica e Fallback Híbrido para JSON Tolerante.
  */
 
 #include "hbclass.ch"
@@ -20,9 +21,10 @@ CREATE CLASS JSONClass
    VAR cJsonType        
    VAR lEof
    VAR lBof
+   VAR lStoreLargeNums  // Proteção de integridade numérica
 
    // Construtor limpo: recebe apenas o que o motor JSON realmente consome
-   METHOD New( cFileName, lHeader, lRetornaTipado, aManualHeader )
+   METHOD New( cFileName, lHeader, lRetornaTipado, aManualHeader, lStoreLargeNums )
    
    // --- Interface Polimorfica (Idêntica ao CSVClass) ---
    METHOD Open()
@@ -50,11 +52,12 @@ CREATE CLASS JSONClass
 
 ENDCLASS
 
-METHOD New( cFileName, lHeader, lRetornaTipado, aManualHeader ) CLASS JSONClass
-   ::cFile         := cFileName
-   ::lHasHeader    := hb_DefaultValue( lHeader, .T. )
-   ::lTyped        := hb_DefaultValue( lRetornaTipado, .F. )
-   ::aManualHeader := hb_DefaultValue( aManualHeader, {} )
+METHOD New( cFileName, lHeader, lRetornaTipado, aManualHeader, lStoreLargeNums ) CLASS JSONClass
+   ::cFile           := cFileName
+   ::lHasHeader      := hb_DefaultValue( lHeader, .T. )
+   ::lTyped          := hb_DefaultValue( lRetornaTipado, .F. )
+   ::aManualHeader   := hb_DefaultValue( aManualHeader, {} )
+   ::lStoreLargeNums := hb_DefaultValue( lStoreLargeNums, .F. )
    
    ::aData         := {}
    ::aStruct       := {}
@@ -70,7 +73,7 @@ RETURN Self
 // + Retorna o registro atual do JSON em formato de string/linha formatada
 // +--------------------------------------------------------------------
 METHOD GetLine( cDelim ) CLASS JSONClass
-   LOCAL xRecord, cLine := "", nX
+   LOCAL xRecord, cLine := "", nX, aBuffer
    
    IF ValType( cDelim ) <> "C" .OR. Empty( cDelim )
       cDelim := "|" // Padrão pipe se não informado
@@ -86,14 +89,13 @@ METHOD GetLine( cDelim ) CLASS JSONClass
    IF ValType( xRecord ) == "H"
       cLine := hb_jsonEncode( xRecord, .F. )
       
-   // Se for Array de valores, une usando o delimitador
+   // Se for Array de valores, une usando o delimitador com otimização ArrayToLine
    ELSEIF ValType( xRecord ) == "A"
+      aBuffer := Array( Len( xRecord ) )
       FOR nX := 1 TO Len( xRecord )
-         cLine += hb_ValToStr( xRecord[ nX ] )
-         IF nX < Len( xRecord )
-            cLine += cDelim
-         ENDIF
+         aBuffer[ nX ] := hb_ValToStr( xRecord[ nX ] )
       NEXT
+      cLine := hb_ArrayToLine( aBuffer, cDelim )
       
    // Fallback para valores literais
    ELSE
@@ -109,9 +111,16 @@ METHOD Open() CLASS JSONClass
       RETURN .F.
    ENDIF
 
+   // 1. Leitura Nativa e Fast Path
    cContent := MemoRead( ::cFile )
    xDecoded := hb_jsonDecode( cContent )
 
+   // 2. Slow Path (Fallback Híbrido Tolerante)
+   IF ValType( xDecoded ) <> "A" .AND. !Empty( cContent )
+      xDecoded := RelaxedJsonDecode( cContent )
+   ENDIF
+
+   // Aborta se continuar inválido
    IF ValType( xDecoded ) <> "A"
       RETURN .F. 
    ENDIF
@@ -202,8 +211,12 @@ METHOD GoBottom() CLASS JSONClass
 RETURN NIL
 
 METHOD Skip( nRows ) CLASS JSONClass
-   IF ValType( nRows ) <> "N"; nRows := 1; ENDIF
-   IF ::nTotalRecords == 0; RETURN NIL; ENDIF
+   IF ValType( nRows ) <> "N"
+      nRows := 1
+   ENDIF
+   IF ::nTotalRecords == 0
+      RETURN NIL
+   ENDIF
 
    ::nRecNo += nRows
    ::lBof := .F.
@@ -268,7 +281,7 @@ METHOD FieldGet( nFieldPos ) CLASS JSONClass
       ENDIF
    ENDIF
 
-   // --- LOGICA DE TIPAGEM CORRIGIDA ---
+   // --- LOGICA DE TIPAGEM CORRIGIDA COM SUPORTE A LARGEMUNS ---
    IF ::lTyped
       cType := ::aStruct[ nFieldPos, 3 ]
       
@@ -276,11 +289,16 @@ METHOD FieldGet( nFieldPos ) CLASS JSONClass
       IF cType == "D"
          xVal := ::StrDate( xRawVal )
       ELSEIF cType == "T" .OR. cType == "@"
-         xVal := UniversalDateTime( xRawVal ) // <-- INJEÇÃO: Conversor Universal de Data e Hora   
+         xVal := UniversalDateTime( xRawVal )
       ELSEIF cType == "L"
          xVal := ::StrLogic( xRawVal, .F. )
       ELSEIF cType == "N"
-         xVal := Val( hb_ValToStr( xRawVal ) )
+         // Proteção para evitar truncagem de ponto flutuante
+         IF ::lStoreLargeNums .AND. ValType( xRawVal ) == "C" .AND. Len( AllTrim( xRawVal ) ) >= 16
+            xVal := xRawVal
+         ELSE
+            xVal := Val( hb_ValToStr( xRawVal ) )
+         ENDIF
          
       // 2. Tipagem Dinamica (Inferencia)
       ELSEIF ValType( xRawVal ) == "C"
@@ -302,22 +320,41 @@ METHOD FieldGet( nFieldPos ) CLASS JSONClass
 RETURN xVal
 
 METHOD GetRow() CLASS JSONClass
-   LOCAL aRow := {}, nI
+   LOCAL aRow := Array( ::nFields ), nI
    IF !::lEof
       FOR nI := 1 TO ::nFields
-         AAdd( aRow, ::FieldGet( nI ) )
+         aRow[ nI ] := ::FieldGet( nI )
       NEXT
    ENDIF
 RETURN aRow
 
 METHOD StrLogic( cVal, lDefault ) CLASS JSONClass
-   IF ValType( lDefault ) <> "L"; lDefault := .F.; ENDIF
+   IF ValType( lDefault ) <> "L"
+      lDefault := .F.
+   ENDIF
    cVal := AllTrim( cVal )
    
    SWITCH Upper( cVal )
-   CASE ".T."; CASE "TRUE"; CASE "YES"; CASE "SIM"; CASE "ON"; CASE "Y"; CASE "1"; CASE "T"; CASE "S"
+   CASE ".T."
+   CASE "TRUE"
+   CASE "YES"
+   CASE "SIM"
+   CASE "ON"
+   CASE "Y"
+   CASE "1"
+   CASE "T"
+   CASE "S"
       RETURN .T.
-   CASE ".F."; CASE "FALSE"; CASE "NO"; CASE "NAO"; CASE "OFF"; CASE "N"; CASE "0"; CASE "F"; CASE "<NULL>"; CASE "NULL"
+   CASE ".F."
+   CASE "FALSE"
+   CASE "NO"
+   CASE "NAO"
+   CASE "OFF"
+   CASE "N"
+   CASE "0"
+   CASE "F"
+   CASE "<NULL>"
+   CASE "NULL"
       RETURN .F.
    ENDSWITCH
 RETURN lDefault
@@ -349,10 +386,6 @@ LOCAL dRet := CToD( "" )
    ENDIF
 
    cTemp := AllTrim( xData )
-
-   // -------------------------------------------------------------------------
-   // Suporte a Formatos HTTP-date e Logs (Inglês e Português)
-   // -------------------------------------------------------------------------
    cTemp := StrTran( cTemp, ",", " " )
    cTemp := StrTran( cTemp, "-", " " )
 
@@ -365,27 +398,18 @@ LOCAL dRet := CToD( "" )
    IF Len( aParts ) >= 4
       FOR i := 1 TO Len( aParts )
          cMesStr := Upper( Left( aParts[ i ], 3 ) )
-         
-         // 1. Busca primeiro em Inglês
          nMes := AScan( aMonthsEN, cMesStr )
-         
-         // 2. Se não encontrar, tenta em Português
          IF nMes == 0
             nMes := AScan( aMonthsPT, cMesStr )
          ENDIF
-         
-         // Se encontrou o mês, processa
          IF nMes > 0
             cMes := StrZero( nMes, 2 )
-            
-            // Extrai o Dia e o Ano baseado na posição do Mês (ANSI C vs RFC)
-            IF i == 2 .AND. Len( aParts ) >= 5 // ANSI C asctime
+            IF i == 2 .AND. Len( aParts ) >= 5
                cDia := StrZero( Val( aParts[ 3 ] ), 2 )
                cAno := aParts[ 5 ]
-            ELSEIF i == 3 // RFC 1123 / RFC 850
+            ELSEIF i == 3 
                cDia := StrZero( Val( aParts[ 2 ] ), 2 )
                cAno := aParts[ 4 ]
-               
                IF Len( cAno ) == 2
                   nAno := Val( cAno )
                   cAno := iif( nAno < 50, "20" + cAno, "19" + cAno )
@@ -393,10 +417,8 @@ LOCAL dRet := CToD( "" )
             ELSE
                LOOP 
             ENDIF
-            
             nDia := Val( cDia )
             nAno := Val( cAno )
-            
             IF nDia >= 1 .AND. nDia <= 31 .AND. nAno >= 1000 .AND. Len( cAno ) == 4
                dRet := SToD( cAno + cMes + cDia )
                IF !Empty( dRet )
@@ -407,10 +429,7 @@ LOCAL dRet := CToD( "" )
       NEXT
    ENDIF
 
-   // -------------------------------------------------------------------------
-   // Fallback Original para Bancos de Dados (YYYY-MM-DD, DD/MM/YYYY, etc.)
-   // -------------------------------------------------------------------------
-   cTemp := AllTrim( xData ) // Restaura a string original limpa para o fallback
+   cTemp := AllTrim( xData ) 
    cTemp := StrTran( cTemp, "-", "/" ) 
    cTemp := StrTran( cTemp, ".", "/" ) 
    aParts := hb_ATokens( cTemp, "/" ) 
@@ -451,7 +470,7 @@ LOCAL dRet := CToD( "" )
    ENDIF
 RETURN dRet
 
- // +--------------------------------------------------------------------
+// +--------------------------------------------------------------------
 // +  Função: UniversalDateTime
 // +  Objetivo: Tratar datas complexas mantendo e corrigindo o horário
 // +  Retorna: Timestamp nativo (T) de alta precisão
@@ -507,12 +526,169 @@ STATIC FUNCTION UniversalDateTime( xData )
 
    // 6. Separa e converte as partes do Horário
    aParts := hb_ATokens( cTime, ":" )
-   IF Len( aParts ) >= 1; nHour := Val( aParts[1] ); ENDIF
-   IF Len( aParts ) >= 2; nMin  := Val( aParts[2] ); ENDIF
-   IF Len( aParts ) >= 3; nSec  := Val( aParts[3] ); ENDIF
+   IF Len( aParts ) >= 1
+      nHour := Val( aParts[1] )
+   ENDIF
+   IF Len( aParts ) >= 2
+      nMin  := Val( aParts[2] )
+   ENDIF
+   IF Len( aParts ) >= 3
+      nSec  := Val( aParts[3] )
+   ENDIF
 
    // 7. Retorna o Objeto Timestamp Oficial
    RETURN hb_DateTime( Year( dData ), Month( dData ), Day( dData ), nHour, nMin, nSec ) 
+
+
+// +--------------------------------------------------------------------
+// + Interpretador JSON Tolerante (Fallback Híbrido)
+// + Suporta chaves sem aspas e strings com aspas simples
+// +--------------------------------------------------------------------
+STATIC FUNCTION RelaxedJsonDecode( cJson )
+   LOCAL nIndex := 1
+   LOCAL cChar, xResult := NIL
+
+   RelaxedIgnoreSpaces( cJson, @nIndex )
+   cChar := SubStr( cJson, nIndex, 1 )
    
+   IF cChar == "["
+      xResult := RelaxedParseArray( cJson, @nIndex )
+   ELSEIF cChar == "{"
+      xResult := RelaxedParseObject( cJson, @nIndex )
+   ENDIF
    
+   RETURN xResult
+
+STATIC FUNCTION RelaxedParseArray( cJson, nIndex )
+   LOCAL aList := {}, xValue
    
+   nIndex++ 
+   RelaxedIgnoreSpaces( cJson, @nIndex )
+   
+   WHILE nIndex <= Len( cJson ) .AND. SubStr( cJson, nIndex, 1 ) != "]"
+      xValue := RelaxedParseValue( cJson, @nIndex )
+      AAdd( aList, xValue )
+      
+      RelaxedIgnoreSpaces( cJson, @nIndex )
+      IF SubStr( cJson, nIndex, 1 ) == ","
+         nIndex++ 
+         RelaxedIgnoreSpaces( cJson, @nIndex )
+      ENDIF
+   ENDDO
+   
+   nIndex++ 
+   RETURN aList
+
+STATIC FUNCTION RelaxedParseObject( cJson, nIndex )
+   LOCAL hObj := {=>}, cKey, xValue, cChar
+   
+   nIndex++ 
+   RelaxedIgnoreSpaces( cJson, @nIndex )
+   
+   WHILE nIndex <= Len( cJson ) .AND. SubStr( cJson, nIndex, 1 ) != "}"
+      cKey := RelaxedParseKey( cJson, @nIndex )
+      RelaxedIgnoreSpaces( cJson, @nIndex )
+      
+      IF SubStr( cJson, nIndex, 1 ) == ":"
+         nIndex++
+      ENDIF
+      
+      RelaxedIgnoreSpaces( cJson, @nIndex )
+      
+      xValue := RelaxedParseValue( cJson, @nIndex )
+      hb_HSet( hObj, cKey, xValue )
+      
+      RelaxedIgnoreSpaces( cJson, @nIndex )
+      IF SubStr( cJson, nIndex, 1 ) == ","
+         nIndex++
+         RelaxedIgnoreSpaces( cJson, @nIndex )
+      ENDIF
+   ENDDO
+   
+   nIndex++ 
+   RETURN hObj
+
+STATIC FUNCTION RelaxedParseValue( cJson, nIndex )
+   LOCAL cChar := SubStr( cJson, nIndex, 1 ), xVal
+   
+   DO CASE
+      CASE cChar == "{"
+         xVal := RelaxedParseObject( cJson, @nIndex )
+      CASE cChar == "["
+         xVal := RelaxedParseArray( cJson, @nIndex )
+      CASE cChar == '"' .OR. cChar == "'"
+         xVal := RelaxedParseString( cJson, @nIndex, cChar )
+      CASE IsDigit( cChar ) .OR. cChar == "-"
+         xVal := RelaxedParseNumber( cJson, @nIndex )
+      OTHERWISE
+         xVal := RelaxedParseLiteral( cJson, @nIndex )
+   ENDCASE
+   
+   RETURN xVal
+
+STATIC PROCEDURE RelaxedIgnoreSpaces( cJson, nIndex )
+   WHILE nIndex <= Len( cJson ) .AND. SubStr( cJson, nIndex, 1 ) $ " " + hb_osNewLine() + Chr(9)
+      nIndex++
+   ENDDO
+   RETURN
+
+STATIC FUNCTION RelaxedParseKey( cJson, nIndex )
+   LOCAL cKey := "", cChar := SubStr( cJson, nIndex, 1 )
+   IF cChar == '"' .OR. cChar == "'"
+      cKey := RelaxedParseString( cJson, @nIndex, cChar )
+   ELSE
+      WHILE nIndex <= Len( cJson )
+         cChar := SubStr( cJson, nIndex, 1 )
+         IF cChar $ " :"
+            EXIT
+         ENDIF
+         cKey += cChar
+         nIndex++
+      ENDDO
+   ENDIF
+   RETURN cKey
+
+STATIC FUNCTION RelaxedParseString( cJson, nIndex, cQuoteType )
+   LOCAL cStr := "", cChar
+   nIndex++ 
+   WHILE nIndex <= Len( cJson )
+      cChar := SubStr( cJson, nIndex, 1 )
+      IF cChar == cQuoteType
+         nIndex++
+         EXIT
+      ENDIF
+      cStr += cChar
+      nIndex++
+   ENDDO
+   RETURN cStr
+
+STATIC FUNCTION RelaxedParseNumber( cJson, nIndex )
+   LOCAL cNum := "", cChar
+   WHILE nIndex <= Len( cJson )
+      cChar := SubStr( cJson, nIndex, 1 )
+      IF !(cChar $ "+-0123456789.eE")
+         EXIT
+      ENDIF
+      cNum += cChar
+      nIndex++
+   ENDDO
+   RETURN Val( cNum )
+
+STATIC FUNCTION RelaxedParseLiteral( cJson, nIndex )
+   LOCAL cLiteral := "", cChar, xRet := NIL
+   WHILE nIndex <= Len( cJson )
+      cChar := SubStr( cJson, nIndex, 1 )
+      IF cChar $ " ,]}"
+         EXIT
+      ENDIF
+      cLiteral += cChar
+      nIndex++
+   ENDDO
+   cLiteral := Lower( cLiteral )
+   IF cLiteral == "true"
+      xRet := .T.
+   ENDIF
+   IF cLiteral == "false"
+      xRet := .F.
+   ENDIF
+   RETURN xRet

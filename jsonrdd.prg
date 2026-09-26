@@ -1,8 +1,7 @@
 /*
  * JSONRDD RDD - Motor de Banco de Dados na RAM para arquivos JSON
- * Suporta: JSON Array de Arrays (Ex: [ [1,"A"], [2,"B"] ])
- * Suporta: JSON Array de Hashes (Ex: [ {"id":1, "nome":"A"} ])
- * Inclui: Tipagem Dinâmica e Detecção Automática portadas do FCSVRDD
+ * Suporta: JSON Array de Arrays e JSON Array de Hashes
+ * Atualização: Proteção contra OOM em CSV, ArrayToLine, Proteção Numérica e Fallback Híbrido.
  */
 
 #include "rddsys.ch"
@@ -13,14 +12,14 @@
 
 ANNOUNCE JSONRDD
 
-STATIC s_lRetornaTipado := .F. // Define se retorna os dados convertidos (Tipados)
-STATIC s_aManualHeader  := {}  // Armazena a matriz de cabeçalho/tipagem passada manualmente
-STATIC s_lUseHeader     := .F. // Usa o primeiro item do Array como nome dos campos (se for Array de Array)
+STATIC s_lRetornaTipado  := .F. // Define se retorna os dados convertidos (Tipados)
+STATIC s_aManualHeader   := {}  // Armazena a matriz de cabeçalho/tipagem passada manualmente
+STATIC s_lUseHeader      := .F. // Usa o primeiro item do Array como nome dos campos (se for Array de Array)
+STATIC s_lStoreLargeNums := .F. // Trata números longos (>15 chars) como string
 
 // +--------------------------------------------------------------------
 // + Funções de Configuração Global
 // +--------------------------------------------------------------------
-
 
 // Função para ativar/desativar a conversão dos dados no GetValue
 FUNCTION FJSON_RETORNATIPADO( lUse )
@@ -42,20 +41,21 @@ FUNCTION FJSON_USARHEADER( lUse )
    ENDIF
    RETURN s_lUseHeader
 
+// Nova configuração: Proteção de precisão em IDS longos
+FUNCTION FJSON_STORELARGENUMS( lUse )
+   IF ValType( lUse ) == "L"
+      s_lStoreLargeNums := lUse
+   ENDIF
+   RETURN s_lStoreLargeNums
 
 /*
  * Função: JsonParaCsvRdd
  * Objetivo: Converte um arquivo JSON para CSV usando o JSONRDD
- * Parâmetros:
- *   - cFileJson     : Caminho do arquivo JSON de entrada (obrigatório)
- *   - cFileCsv      : Caminho do arquivo CSV de saída (opcional, troca a extensão se vazio)
- *   - lRetornaTipado : Retorna dados tipados (padrão .F.)
- *   - lUserHeader   : Usa o cabeçalho/primeira linha (padrão .F.)
- *   - cDelim        : Delimitador de campos (padrão "|")
  */
 FUNCTION JsonParaCsvRdd( cFileJson, cFileCsv, lRetornaTipado, lUserHeader, cDelim )
-   LOCAL nHandleCsv, nFld, nI, cLinha
+   LOCAL nHandleCsv, nFld, nI, cLinha, aBuffer, cBlocoEscrita := ""
    LOCAL cAliasTemp := "JCN_" + AllTrim( Str( HB_RandomInt( 1000, 9999 ) ) )
+   LOCAL nLinhasCache := 0
 
    // 1. Validações iniciais
    IF !File( cFileJson )
@@ -102,22 +102,31 @@ FUNCTION JsonParaCsvRdd( cFileJson, cFileCsv, lRetornaTipado, lUserHeader, cDeli
    ( cAliasTemp )->( DBGoTop() )
    nFld := ( cAliasTemp )->( FCount() )
 
-   // 4. Varre os registros e grava no formato CSV usando o delimitador escolhido
+   // 4. Varre os registros e grava no formato CSV usando buffer
    WHILE ( cAliasTemp )->( !EOF() )
-      cLinha := ""
+      aBuffer := Array( nFld )
       
       FOR nI := 1 TO nFld
-         cLinha += hb_ValToStr( ( cAliasTemp )->( FieldGet( nI ) ) )
-         
-         IF nI < nFld
-            cLinha += cDelim // Usa o delimitador passado por parâmetro (ou "|" por padrão)
-         ENDIF
+         aBuffer[ nI ] := hb_ValToStr( ( cAliasTemp )->( FieldGet( nI ) ) )
       NEXT
 
-      FWrite( nHandleCsv, cLinha + hb_osNewLine() )
+      cBlocoEscrita += hb_ArrayToLine( aBuffer, cDelim ) + hb_osNewLine()
+      nLinhasCache++
+
+      // Descarrega no disco para evitar consumo massivo de RAM
+      IF nLinhasCache > 1000
+         FWrite( nHandleCsv, cBlocoEscrita )
+         cBlocoEscrita := ""
+         nLinhasCache := 0
+      ENDIF
       
       ( cAliasTemp )->( DBSkip() )
    ENDDO
+
+   // Grava o resíduo
+   IF !Empty( cBlocoEscrita )
+      FWrite( nHandleCsv, cBlocoEscrita )
+   ENDIF
 
    // 5. Encerramento e limpeza
    FClose( nHandleCsv )
@@ -177,7 +186,6 @@ FUNCTION FJSON_GETSTRUCTORIGINAL()
    
    RETURN aStruct
 
-
 // +--------------------------------------------------------------------
 // + Retorna um Array com os valores dos campos do registro JSON atual
 // +--------------------------------------------------------------------
@@ -212,7 +220,7 @@ FUNCTION FJSON_GETROW()
 // + Retorna o registro atual do JSON em formato de string/linha formatada
 // +--------------------------------------------------------------------
 FUNCTION FJSON_GETLINE( cDelim )
-   LOCAL aWData, nRecNo, xRecord, cLine := "", nX
+   LOCAL aWData, nRecNo, xRecord, cLine := "", nX, aBuffer
    
    IF ValType( cDelim ) <> "C" .OR. Empty( cDelim )
       cDelim := "|" // Padrão pipe se não informado
@@ -229,13 +237,11 @@ FUNCTION FJSON_GETLINE( cDelim )
          IF ValType( xRecord ) == "H"
             cLine := hb_jsonEncode( xRecord, .F. )
          ELSEIF ValType( xRecord ) == "A"
-            // Se for Array, une os valores usando o delimitador escolhido
+            aBuffer := Array( Len( xRecord ) )
             FOR nX := 1 TO Len( xRecord )
-               cLine += hb_ValToStr( xRecord[ nX ] )
-               IF nX < Len( xRecord )
-                  cLine += cDelim
-               ENDIF
+               aBuffer[ nX ] := hb_ValToStr( xRecord[ nX ] )
             NEXT
+            cLine := hb_ArrayToLine( aBuffer, cDelim )
          ELSE
             cLine := hb_ValToStr( xRecord )
          ENDIF
@@ -243,6 +249,7 @@ FUNCTION FJSON_GETLINE( cDelim )
    ENDIF
    
    RETURN cLine
+
 // +--------------------------------------------------------------------
 // + Conversão Lógica Robusta
 // +--------------------------------------------------------------------
@@ -412,6 +419,7 @@ LOCAL dRet := CToD( "" )
       ENDIF
    ENDIF
 RETURN dRet
+
 // +--------------------------------------------------------------------
 // + Métodos Internos do RDD
 // +--------------------------------------------------------------------
@@ -466,6 +474,11 @@ STATIC FUNCTION FJSON_OPEN( nWA, aOpenInfo )
    // 1. LÊ E DECODIFICA O JSON INTEIRO PARA A MEMÓRIA
    cJsonText := MemoRead( aOpenInfo[ UR_OI_NAME ] )
    xJsonData := hb_jsonDecode( cJsonText )
+
+   // 2. SLOW PATH: Motor tolerante para JSON fora de formato estrito
+   IF ValType( xJsonData ) <> "A" .AND. !Empty( cJsonText )
+      xJsonData := RelaxedJsonDecode( cJsonText )
+   ENDIF
 
    IF !( ValType( xJsonData ) == "A" )
       // O RDD espera que o JSON base seja uma Tabela (Array de objetos ou de arrays)
@@ -610,7 +623,11 @@ STATIC FUNCTION FJSON_GETVALUE( nWA, nField, xValue )
       
       DO CASE
          CASE cType == "N"
-            xValue := Val( xRawStr )
+            IF s_lStoreLargeNums .AND. Len( AllTrim( xRawStr ) ) >= 16
+               xValue := xRawStr
+            ELSE
+               xValue := Val( xRawStr )
+            ENDIF
          CASE cType == "D"
             xValue := StrDateRdd( xRawStr )
          CASE cType == "T" .OR. cType == "@"
@@ -793,8 +810,7 @@ INIT PROCEDURE JSONRDD_INIT()
    rddRegister( "JSONRDD", RDT_FULL )
    RETURN
    
-   
- // +--------------------------------------------------------------------
+// +--------------------------------------------------------------------
 // +  Função: UniversalDateTime
 // +  Objetivo: Tratar datas complexas mantendo e corrigindo o horário
 // +  Retorna: Timestamp nativo (T) de alta precisão
@@ -837,7 +853,7 @@ STATIC FUNCTION UniversalDateTime( xData )
    cDataLimpa := AllTrim( cDataLimpa )
    
    // 5. Utiliza o motor otimizado para extrair o calendário válido
-   dData := StrDaterdd( cDataLimpa )
+   dData := StrDateRdd( cDataLimpa )
 
    // Fallback se a rotina retornar vazio, checa direto via Harbour CToD
    IF Empty( dData ) .AND. !Empty( CToD( cDataLimpa ) )
@@ -850,10 +866,169 @@ STATIC FUNCTION UniversalDateTime( xData )
 
    // 6. Separa e converte as partes do Horário
    aParts := hb_ATokens( cTime, ":" )
-   IF Len( aParts ) >= 1; nHour := Val( aParts[1] ); ENDIF
-   IF Len( aParts ) >= 2; nMin  := Val( aParts[2] ); ENDIF
-   IF Len( aParts ) >= 3; nSec  := Val( aParts[3] ); ENDIF
+   IF Len( aParts ) >= 1
+      nHour := Val( aParts[1] )
+   ENDIF
+   IF Len( aParts ) >= 2
+      nMin  := Val( aParts[2] )
+   ENDIF
+   IF Len( aParts ) >= 3
+      nSec  := Val( aParts[3] )
+   ENDIF
 
    // 7. Retorna o Objeto Timestamp Oficial
    RETURN hb_DateTime( Year( dData ), Month( dData ), Day( dData ), nHour, nMin, nSec ) 
+
+
+// +--------------------------------------------------------------------
+// + Interpretador JSON Tolerante (Fallback Híbrido)
+// + Suporta chaves sem aspas e strings com aspas simples
+// +--------------------------------------------------------------------
+STATIC FUNCTION RelaxedJsonDecode( cJson )
+   LOCAL nIndex := 1
+   LOCAL cChar, xResult := NIL
+
+   RelaxedIgnoreSpaces( cJson, @nIndex )
+   cChar := SubStr( cJson, nIndex, 1 )
    
+   IF cChar == "["
+      xResult := RelaxedParseArray( cJson, @nIndex )
+   ELSEIF cChar == "{"
+      xResult := RelaxedParseObject( cJson, @nIndex )
+   ENDIF
+   
+   RETURN xResult
+
+STATIC FUNCTION RelaxedParseArray( cJson, nIndex )
+   LOCAL aList := {}, xValue
+   
+   nIndex++ 
+   RelaxedIgnoreSpaces( cJson, @nIndex )
+   
+   WHILE nIndex <= Len( cJson ) .AND. SubStr( cJson, nIndex, 1 ) != "]"
+      xValue := RelaxedParseValue( cJson, @nIndex )
+      AAdd( aList, xValue )
+      
+      RelaxedIgnoreSpaces( cJson, @nIndex )
+      IF SubStr( cJson, nIndex, 1 ) == ","
+         nIndex++ 
+         RelaxedIgnoreSpaces( cJson, @nIndex )
+      ENDIF
+   ENDDO
+   
+   nIndex++ 
+   RETURN aList
+
+STATIC FUNCTION RelaxedParseObject( cJson, nIndex )
+   LOCAL hObj := {=>}, cKey, xValue, cChar
+   
+   nIndex++ 
+   RelaxedIgnoreSpaces( cJson, @nIndex )
+   
+   WHILE nIndex <= Len( cJson ) .AND. SubStr( cJson, nIndex, 1 ) != "}"
+      cKey := RelaxedParseKey( cJson, @nIndex )
+      RelaxedIgnoreSpaces( cJson, @nIndex )
+      
+      IF SubStr( cJson, nIndex, 1 ) == ":"
+         nIndex++
+      ENDIF
+      
+      RelaxedIgnoreSpaces( cJson, @nIndex )
+      
+      xValue := RelaxedParseValue( cJson, @nIndex )
+      hb_HSet( hObj, cKey, xValue )
+      
+      RelaxedIgnoreSpaces( cJson, @nIndex )
+      IF SubStr( cJson, nIndex, 1 ) == ","
+         nIndex++
+         RelaxedIgnoreSpaces( cJson, @nIndex )
+      ENDIF
+   ENDDO
+   
+   nIndex++ 
+   RETURN hObj
+
+STATIC FUNCTION RelaxedParseValue( cJson, nIndex )
+   LOCAL cChar := SubStr( cJson, nIndex, 1 ), xVal
+   
+   DO CASE
+      CASE cChar == "{"
+         xVal := RelaxedParseObject( cJson, @nIndex )
+      CASE cChar == "["
+         xVal := RelaxedParseArray( cJson, @nIndex )
+      CASE cChar == '"' .OR. cChar == "'"
+         xVal := RelaxedParseString( cJson, @nIndex, cChar )
+      CASE IsDigit( cChar ) .OR. cChar == "-"
+         xVal := RelaxedParseNumber( cJson, @nIndex )
+      OTHERWISE
+         xVal := RelaxedParseLiteral( cJson, @nIndex )
+   ENDCASE
+   
+   RETURN xVal
+
+STATIC PROCEDURE RelaxedIgnoreSpaces( cJson, nIndex )
+   WHILE nIndex <= Len( cJson ) .AND. SubStr( cJson, nIndex, 1 ) $ " " + hb_osNewLine() + Chr(9)
+      nIndex++
+   ENDDO
+   RETURN
+
+STATIC FUNCTION RelaxedParseKey( cJson, nIndex )
+   LOCAL cKey := "", cChar := SubStr( cJson, nIndex, 1 )
+   IF cChar == '"' .OR. cChar == "'"
+      cKey := RelaxedParseString( cJson, @nIndex, cChar )
+   ELSE
+      WHILE nIndex <= Len( cJson )
+         cChar := SubStr( cJson, nIndex, 1 )
+         IF cChar $ " :"
+            EXIT
+         ENDIF
+         cKey += cChar
+         nIndex++
+      ENDDO
+   ENDIF
+   RETURN cKey
+
+STATIC FUNCTION RelaxedParseString( cJson, nIndex, cQuoteType )
+   LOCAL cStr := "", cChar
+   nIndex++ 
+   WHILE nIndex <= Len( cJson )
+      cChar := SubStr( cJson, nIndex, 1 )
+      IF cChar == cQuoteType
+         nIndex++
+         EXIT
+      ENDIF
+      cStr += cChar
+      nIndex++
+   ENDDO
+   RETURN cStr
+
+STATIC FUNCTION RelaxedParseNumber( cJson, nIndex )
+   LOCAL cNum := "", cChar
+   WHILE nIndex <= Len( cJson )
+      cChar := SubStr( cJson, nIndex, 1 )
+      IF !(cChar $ "+-0123456789.eE")
+         EXIT
+      ENDIF
+      cNum += cChar
+      nIndex++
+   ENDDO
+   RETURN Val( cNum )
+
+STATIC FUNCTION RelaxedParseLiteral( cJson, nIndex )
+   LOCAL cLiteral := "", cChar, xRet := NIL
+   WHILE nIndex <= Len( cJson )
+      cChar := SubStr( cJson, nIndex, 1 )
+      IF cChar $ " ,]}"
+         EXIT
+      ENDIF
+      cLiteral += cChar
+      nIndex++
+   ENDDO
+   cLiteral := Lower( cLiteral )
+   IF cLiteral == "true"
+      xRet := .T.
+   ENDIF
+   IF cLiteral == "false"
+      xRet := .F.
+   ENDIF
+   RETURN xRet
