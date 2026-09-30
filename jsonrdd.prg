@@ -1032,3 +1032,34 @@ STATIC FUNCTION RelaxedParseLiteral( cJson, nIndex )
       xRet := .F.
    ENDIF
    RETURN xRet
+   
+   
+// +--------------------------------------------------------------------
+// + Função: hb_ArrayToLine
+// + Objetivo: Converter um Array em uma string delimitada (Polyfill)
+// +--------------------------------------------------------------------
+STATIC FUNCTION hb_ArrayToLine( aArray, cDelim )
+   LOCAL cLine := ""
+   LOCAL nI, nLen
+
+   // Validação de segurança
+   IF ValType( aArray ) <> "A"
+      RETURN ""
+   ENDIF
+
+   // Delimitador padrão caso não seja informado
+   IF ValType( cDelim ) <> "C"
+      cDelim := "|"
+   ENDIF
+
+   nLen := Len( aArray )
+   
+   // Concatenação otimizada
+   FOR nI := 1 TO nLen
+      cLine += hb_ValToStr( aArray[ nI ] )
+      IF nI < nLen
+         cLine += cDelim
+      ENDIF
+   NEXT
+
+   RETURN cLine   
