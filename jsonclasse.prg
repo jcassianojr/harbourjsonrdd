@@ -625,34 +625,58 @@ STATIC FUNCTION RelaxedParseValue( cJson, nIndex )
    ENDCASE
    
    RETURN xVal
-
+   
 STATIC PROCEDURE RelaxedIgnoreSpaces( cJson, nIndex )
-   WHILE nIndex <= Len( cJson ) .AND. SubStr( cJson, nIndex, 1 ) $ " " + hb_osNewLine() + Chr(9)
-      nIndex++
+   LOCAL cChar
+   WHILE nIndex <= Len( cJson )
+      cChar := SubStr( cJson, nIndex, 1 )
+      // Compara pelo código ASCII para ser mais rápido (Espaço, Tab, LF, CR)
+      IF cChar == " " .OR. cChar == Chr(9) .OR. cChar == Chr(10) .OR. cChar == Chr(13)
+         nIndex++
+      ELSE
+         EXIT
+      ENDIF
    ENDDO
    RETURN
 
 STATIC FUNCTION RelaxedParseKey( cJson, nIndex )
    LOCAL cKey := "", cChar := SubStr( cJson, nIndex, 1 )
+   LOCAL nStart
+   
    IF cChar == '"' .OR. cChar == "'"
       cKey := RelaxedParseString( cJson, @nIndex, cChar )
    ELSE
+      nStart := nIndex
       WHILE nIndex <= Len( cJson )
          cChar := SubStr( cJson, nIndex, 1 )
          IF cChar $ " :"
             EXIT
          ENDIF
-         cKey += cChar
          nIndex++
       ENDDO
+      cKey := SubStr( cJson, nStart, nIndex - nStart ) // Extração direta
    ENDIF
    RETURN cKey
+
 
 STATIC FUNCTION RelaxedParseString( cJson, nIndex, cQuoteType )
    LOCAL cStr := "", cChar
    nIndex++ 
    WHILE nIndex <= Len( cJson )
       cChar := SubStr( cJson, nIndex, 1 )
+      
+      // Tratamento de caractere de escape
+      IF cChar == "\"
+         nIndex++
+         cChar := SubStr( cJson, nIndex, 1 )
+         // Converte escapes básicos
+         IF cChar == "n"; cChar := hb_osNewLine(); ENDIF
+         IF cChar == "t"; cChar := Chr(9); ENDIF
+         cStr += cChar
+         nIndex++
+         LOOP
+      ENDIF
+      
       IF cChar == cQuoteType
          nIndex++
          EXIT
@@ -663,36 +687,44 @@ STATIC FUNCTION RelaxedParseString( cJson, nIndex, cQuoteType )
    RETURN cStr
 
 STATIC FUNCTION RelaxedParseNumber( cJson, nIndex )
-   LOCAL cNum := "", cChar
+   LOCAL nStart := nIndex
+   LOCAL cChar
+
    WHILE nIndex <= Len( cJson )
       cChar := SubStr( cJson, nIndex, 1 )
       IF !(cChar $ "+-0123456789.eE")
          EXIT
       ENDIF
-      cNum += cChar
       nIndex++
    ENDDO
-   RETURN Val( cNum )
-
+   
+   // Extrai tudo de uma vez. Muito mais rápido que cNum += cChar
+   RETURN Val( SubStr( cJson, nStart, nIndex - nStart ) )
+   
 STATIC FUNCTION RelaxedParseLiteral( cJson, nIndex )
-   LOCAL cLiteral := "", cChar, xRet := NIL
+   LOCAL nStart := nIndex, cLiteral, cChar, xRet := NIL
+   
    WHILE nIndex <= Len( cJson )
       cChar := SubStr( cJson, nIndex, 1 )
       IF cChar $ " ,]}"
          EXIT
       ENDIF
-      cLiteral += cChar
       nIndex++
    ENDDO
-   cLiteral := Lower( cLiteral )
+   
+   cLiteral := Lower( SubStr( cJson, nStart, nIndex - nStart ) )
+   
    IF cLiteral == "true"
       xRet := .T.
-   ENDIF
-   IF cLiteral == "false"
+   ELSEIF cLiteral == "false"
       xRet := .F.
+   ELSEIF cLiteral == "null"
+      xRet := NIL
+   ELSE
+      // Fallback de segurança para lixo (mantém como string)
+      xRet := cLiteral 
    ENDIF
-   RETURN xRet
-   
+   RETURN xRet   
    
    
    // +--------------------------------------------------------------------
