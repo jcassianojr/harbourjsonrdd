@@ -660,20 +660,90 @@ STATIC FUNCTION RelaxedParseKey( cJson, nIndex )
 
 
 STATIC FUNCTION RelaxedParseString( cJson, nIndex, cQuoteType )
-   LOCAL cStr := "", cChar
+   LOCAL cStr := "", cChar, cEscape, cHex
+   LOCAL nCode, nDigit, nLow, nStart, nI
    nIndex++ 
    WHILE nIndex <= Len( cJson )
       cChar := SubStr( cJson, nIndex, 1 )
       
-      // Tratamento de caractere de escape
       IF cChar == "\"
          nIndex++
-         cChar := SubStr( cJson, nIndex, 1 )
-         // Converte escapes básicos
-         IF cChar == "n"; cChar := hb_osNewLine(); ENDIF
-         IF cChar == "t"; cChar := Chr(9); ENDIF
-         cStr += cChar
-         nIndex++
+         IF nIndex > Len( cJson )
+            cStr += "\"
+            EXIT
+         ENDIF
+
+         cEscape := SubStr( cJson, nIndex, 1 )
+         DO CASE
+         CASE cEscape == '"'
+            cStr += '"'
+            nIndex++
+         CASE cEscape == "'"
+            cStr += "'"
+            nIndex++
+         CASE cEscape == "\"
+            cStr += "\"
+            nIndex++
+         CASE cEscape == "/"
+            cStr += "/"
+            nIndex++
+         CASE cEscape == "b"
+            cStr += Chr( 8 )
+            nIndex++
+         CASE cEscape == "f"
+            cStr += Chr( 12 )
+            nIndex++
+         CASE cEscape == "n"
+            cStr += hb_osNewLine()
+            nIndex++
+         CASE cEscape == "r"
+            cStr += Chr( 13 )
+            nIndex++
+         CASE cEscape == "t"
+            cStr += Chr( 9 )
+            nIndex++
+         CASE cEscape == "u"
+            nStart := nIndex + 1
+            nCode := 0
+            FOR nI := 1 TO 4
+               cHex := Upper( SubStr( cJson, nStart + nI - 1, 1 ) )
+               nDigit := At( cHex, "0123456789ABCDEF" ) - 1
+               IF nDigit < 0
+                  EXIT
+               ENDIF
+               nCode := nCode * 16 + nDigit
+            NEXT
+
+            IF nI == 5
+               nIndex += 5
+               IF nCode >= 55296 .AND. nCode <= 56319 .AND. ;
+                  SubStr( cJson, nIndex, 2 ) == "\u"
+                  nLow := 0
+                  FOR nI := 1 TO 4
+                     cHex := Upper( SubStr( cJson, nIndex + 1 + nI - 1, 1 ) )
+                     nDigit := At( cHex, "0123456789ABCDEF" ) - 1
+                     IF nDigit < 0
+                        EXIT
+                     ENDIF
+                     nLow := nLow * 16 + nDigit
+                  NEXT
+                  IF nI == 5 .AND. nLow >= 56320 .AND. nLow <= 57343
+                     nCode := 65536 + ( nCode - 55296 ) * 1024 + nLow - 56320
+                     nIndex += 6
+                  ENDIF
+               ENDIF
+               IF nCode >= 55296 .AND. nCode <= 57343
+                  nCode := 65533
+               ENDIF
+               cStr += RelaxedUnicodeChar( nCode )
+            ELSE
+               cStr += "\" + cEscape
+               nIndex++
+            ENDIF
+         OTHERWISE
+            cStr += "\" + cEscape
+            nIndex++
+         ENDCASE
          LOOP
       ENDIF
       
@@ -685,6 +755,27 @@ STATIC FUNCTION RelaxedParseString( cJson, nIndex, cQuoteType )
       nIndex++
    ENDDO
    RETURN cStr
+
+STATIC FUNCTION RelaxedUnicodeChar( nCode )
+   LOCAL cUtf8
+
+   IF nCode <= 127
+      cUtf8 := hb_BChar( nCode )
+   ELSEIF nCode <= 2047
+      cUtf8 := hb_BChar( 192 + Int( nCode / 64 ) ) + ;
+               hb_BChar( 128 + nCode - Int( nCode / 64 ) * 64 )
+   ELSEIF nCode <= 65535
+      cUtf8 := hb_BChar( 224 + Int( nCode / 4096 ) ) + ;
+               hb_BChar( 128 + Int( nCode / 64 ) - Int( nCode / 4096 ) * 64 ) + ;
+               hb_BChar( 128 + nCode - Int( nCode / 64 ) * 64 )
+   ELSE
+      cUtf8 := hb_BChar( 240 + Int( nCode / 262144 ) ) + ;
+               hb_BChar( 128 + Int( nCode / 4096 ) - Int( nCode / 262144 ) * 64 ) + ;
+               hb_BChar( 128 + Int( nCode / 64 ) - Int( nCode / 4096 ) * 64 ) + ;
+               hb_BChar( 128 + nCode - Int( nCode / 64 ) * 64 )
+   ENDIF
+
+   RETURN hb_UTF8ToStr( cUtf8 )
 
 STATIC FUNCTION RelaxedParseNumber( cJson, nIndex )
    LOCAL nStart := nIndex

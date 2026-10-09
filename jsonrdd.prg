@@ -967,8 +967,15 @@ STATIC FUNCTION RelaxedParseValue( cJson, nIndex )
    RETURN xVal
 
 STATIC PROCEDURE RelaxedIgnoreSpaces( cJson, nIndex )
-   WHILE nIndex <= Len( cJson ) .AND. SubStr( cJson, nIndex, 1 ) $ " " + hb_osNewLine() + Chr(9)
-      nIndex++
+   LOCAL cChar
+   WHILE nIndex <= Len( cJson )
+      cChar := SubStr( cJson, nIndex, 1 )
+      // Compara pelo código ASCII para ser mais rápido (Espaço, Tab, LF, CR)
+      IF cChar == " " .OR. cChar == Chr(9) .OR. cChar == Chr(10) .OR. cChar == Chr(13)
+         nIndex++
+      ELSE
+         EXIT
+      ENDIF
    ENDDO
    RETURN
 
@@ -989,10 +996,92 @@ STATIC FUNCTION RelaxedParseKey( cJson, nIndex )
    RETURN cKey
 
 STATIC FUNCTION RelaxedParseString( cJson, nIndex, cQuoteType )
-   LOCAL cStr := "", cChar
+   LOCAL cStr := "", cChar, cEscape, cHex
+   LOCAL nCode, nDigit, nLow, nStart, nI
    nIndex++ 
    WHILE nIndex <= Len( cJson )
       cChar := SubStr( cJson, nIndex, 1 )
+      IF cChar == "\"
+         nIndex++
+         IF nIndex > Len( cJson )
+            cStr += "\"
+            EXIT
+         ENDIF
+
+         cEscape := SubStr( cJson, nIndex, 1 )
+         DO CASE
+         CASE cEscape == '"'
+            cStr += '"'
+            nIndex++
+         CASE cEscape == "'"
+            cStr += "'"
+            nIndex++
+         CASE cEscape == "\"
+            cStr += "\"
+            nIndex++
+         CASE cEscape == "/"
+            cStr += "/"
+            nIndex++
+         CASE cEscape == "b"
+            cStr += Chr( 8 )
+            nIndex++
+         CASE cEscape == "f"
+            cStr += Chr( 12 )
+            nIndex++
+         CASE cEscape == "n"
+            cStr += hb_osNewLine()
+            nIndex++
+         CASE cEscape == "r"
+            cStr += Chr( 13 )
+            nIndex++
+         CASE cEscape == "t"
+            cStr += Chr( 9 )
+            nIndex++
+         CASE cEscape == "u"
+            nStart := nIndex + 1
+            nCode := 0
+            FOR nI := 1 TO 4
+               cHex := Upper( SubStr( cJson, nStart + nI - 1, 1 ) )
+               nDigit := At( cHex, "0123456789ABCDEF" ) - 1
+               IF nDigit < 0
+                  EXIT
+               ENDIF
+               nCode := nCode * 16 + nDigit
+            NEXT
+
+            IF nI == 5
+               nIndex += 5
+               IF nCode >= 55296 .AND. nCode <= 56319 .AND. ;
+                  SubStr( cJson, nIndex, 2 ) == "\u"
+                  nLow := 0
+                  FOR nI := 1 TO 4
+                     cHex := Upper( SubStr( cJson, nIndex + 1 + nI - 1, 1 ) )
+                     nDigit := At( cHex, "0123456789ABCDEF" ) - 1
+                     IF nDigit < 0
+                        EXIT
+                     ENDIF
+                     nLow := nLow * 16 + nDigit
+                  NEXT
+                  IF nI == 5 .AND. nLow >= 56320 .AND. nLow <= 57343
+                     nCode := 65536 + ( nCode - 55296 ) * 1024 + nLow - 56320
+                     nIndex += 6
+                  ENDIF
+               ENDIF
+               IF nCode >= 55296 .AND. nCode <= 57343
+                  nCode := 65533
+               ENDIF
+               cStr += RelaxedUnicodeChar( nCode )
+            ELSE
+               cStr += "\" + cEscape
+               nIndex++
+            ENDIF
+         OTHERWISE
+            cStr += "\" + cEscape
+            nIndex++
+         ENDCASE
+         LOOP
+      ENDIF
+
       IF cChar == cQuoteType
          nIndex++
          EXIT
@@ -1002,37 +1091,68 @@ STATIC FUNCTION RelaxedParseString( cJson, nIndex, cQuoteType )
    ENDDO
    RETURN cStr
 
+STATIC FUNCTION RelaxedUnicodeChar( nCode )
+   LOCAL cUtf8
+
+   IF nCode <= 127
+      cUtf8 := hb_BChar( nCode )
+   ELSEIF nCode <= 2047
+      cUtf8 := hb_BChar( 192 + Int( nCode / 64 ) ) + ;
+               hb_BChar( 128 + nCode - Int( nCode / 64 ) * 64 )
+   ELSEIF nCode <= 65535
+      cUtf8 := hb_BChar( 224 + Int( nCode / 4096 ) ) + ;
+               hb_BChar( 128 + Int( nCode / 64 ) - Int( nCode / 4096 ) * 64 ) + ;
+               hb_BChar( 128 + nCode - Int( nCode / 64 ) * 64 )
+   ELSE
+      cUtf8 := hb_BChar( 240 + Int( nCode / 262144 ) ) + ;
+               hb_BChar( 128 + Int( nCode / 4096 ) - Int( nCode / 262144 ) * 64 ) + ;
+               hb_BChar( 128 + Int( nCode / 64 ) - Int( nCode / 4096 ) * 64 ) + ;
+               hb_BChar( 128 + nCode - Int( nCode / 64 ) * 64 )
+   ENDIF
+
+   RETURN hb_UTF8ToStr( cUtf8 )
+
 STATIC FUNCTION RelaxedParseNumber( cJson, nIndex )
-   LOCAL cNum := "", cChar
+   LOCAL nStart := nIndex
+   LOCAL cChar
+
    WHILE nIndex <= Len( cJson )
       cChar := SubStr( cJson, nIndex, 1 )
       IF !(cChar $ "+-0123456789.eE")
          EXIT
       ENDIF
-      cNum += cChar
       nIndex++
    ENDDO
-   RETURN Val( cNum )
+   
+   // Extrai tudo de uma vez. Muito mais rápido que cNum += cChar
+   RETURN Val( SubStr( cJson, nStart, nIndex - nStart ) )
 
 STATIC FUNCTION RelaxedParseLiteral( cJson, nIndex )
-   LOCAL cLiteral := "", cChar, xRet := NIL
+   LOCAL nStart := nIndex, cLiteral, cChar, xRet := NIL
+   
    WHILE nIndex <= Len( cJson )
       cChar := SubStr( cJson, nIndex, 1 )
       IF cChar $ " ,]}"
          EXIT
       ENDIF
-      cLiteral += cChar
       nIndex++
    ENDDO
-   cLiteral := Lower( cLiteral )
+   
+   // Extração em bloco otimizada, eliminando a lentidão do GC (Garbage Collector)
+   cLiteral := Lower( SubStr( cJson, nStart, nIndex - nStart ) )
+   
    IF cLiteral == "true"
       xRet := .T.
-   ENDIF
-   IF cLiteral == "false"
+   ELSEIF cLiteral == "false"
       xRet := .F.
+   ELSEIF cLiteral == "null"
+      xRet := NIL // Mapeamento padrão do Harbour para nulos
+   ELSE
+      // Fallback de segurança: se for lixo ou um tipo não mapeado, devolve a própria string
+      xRet := cLiteral 
    ENDIF
-   RETURN xRet
    
+   RETURN xRet
    
 // +--------------------------------------------------------------------
 // + Função: hb_ArrayToLine
