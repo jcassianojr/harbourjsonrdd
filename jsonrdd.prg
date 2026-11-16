@@ -53,7 +53,7 @@ FUNCTION FJSON_STORELARGENUMS( lUse )
  * Objetivo: Converte um arquivo JSON para CSV usando o JSONRDD
  */
 FUNCTION JsonParaCsvRdd( cFileJson, cFileCsv, lRetornaTipado, lUserHeader, cDelim )
-   LOCAL nHandleCsv, nFld, nI, cLinha, aBuffer, cBlocoEscrita := ""
+   LOCAL nHandleCsv, nFld, nI, aBuffer, cBlocoEscrita := ""
    LOCAL cAliasTemp := "JCN_" + AllTrim( Str( HB_RandomInt( 1000, 9999 ) ) )
    LOCAL nLinhasCache := 0
 
@@ -920,7 +920,7 @@ STATIC FUNCTION RelaxedParseArray( cJson, nIndex )
    RETURN aList
 
 STATIC FUNCTION RelaxedParseObject( cJson, nIndex )
-   LOCAL hObj := {=>}, cKey, xValue, cChar
+   LOCAL hObj := {=>}, cKey, xValue
    
    nIndex++ 
    RelaxedIgnoreSpaces( cJson, @nIndex )
@@ -981,17 +981,19 @@ STATIC PROCEDURE RelaxedIgnoreSpaces( cJson, nIndex )
 
 STATIC FUNCTION RelaxedParseKey( cJson, nIndex )
    LOCAL cKey := "", cChar := SubStr( cJson, nIndex, 1 )
+   LOCAL nStart
    IF cChar == '"' .OR. cChar == "'"
       cKey := RelaxedParseString( cJson, @nIndex, cChar )
    ELSE
+      nStart := nIndex
       WHILE nIndex <= Len( cJson )
          cChar := SubStr( cJson, nIndex, 1 )
          IF cChar $ " :"
             EXIT
          ENDIF
-         cKey += cChar
          nIndex++
       ENDDO
+      cKey := SubStr( cJson, nStart, nIndex - nStart )
    ENDIF
    RETURN cKey
 
